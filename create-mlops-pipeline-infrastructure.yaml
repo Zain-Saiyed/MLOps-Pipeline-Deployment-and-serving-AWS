@@ -1,0 +1,1075 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: MLOPS Pipeline - Stack
+
+# Defining the common parameters to use across the yaml file.
+Parameters:
+  DynamoDBTableName:
+    Type: String  
+    Default: model_metrics_cf 
+
+  SNSTopicName:
+    Type: String
+    Default: mlops-model-metrics-broadcast-topic-cf
+
+  S3BucketName:
+    Type: String
+    Default: mlops-model-storage-cf
+  # Lambda layers ARN by KLayers
+  AWSPandasLambdaLayerARN:
+    Type: String
+    Default: arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python311:3  
+  KLayersPillowLambdaLayerARN:
+    Type: String
+    Default: arn:aws:lambda:us-east-1:770693421928:layer:Klayers-p311-Pillow:2
+  KLayersNumpyLambdaLayerARN:
+    Type: String
+    Default: arn:aws:lambda:us-east-1:770693421928:layer:Klayers-p311-numpy:3
+
+# Defining the AWS resources required for MLOPS pipeline
+Resources:
+  # Create ECR repository to hold training job docker image
+  ECRRepositorySagemakerTraining:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: sagemaker-images-cf
+  # Create DynamoDB Table with specified Partition Key
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref DynamoDBTableName
+      AttributeDefinitions:
+        - AttributeName: model_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: model_id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      BillingMode: PROVISIONED
+  # Create SNS topic to send Email notifications to subscribers
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: mlops-model-training-pipeline-status-notification-cf
+      TopicName: !Ref SNSTopicName
+  # Create S3 bucket to hold training data, model artifacts, user prediction images, and metrics json files.
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+  
+  ################################################################
+  ##### Create Lambdas ###########################################
+  ################################################################
+  LambdaCompareModelStagedMetrics:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: mlops-compare-staged-model-metrics-cf
+      Description: "Lambda function for comparing staged and deployed model metrics, and sending a SNS email notification to the subscribers."
+      Runtime: python3.11  
+      Handler: mlops-compare-staged-model-metrics.lambda_handler 
+      Role: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+      Timeout: 30
+      Code:
+        S3Bucket: mlops-cloud-formation-artifacts 
+        S3Key: lambda-function-codebase/mlops-compare-staged-model-metrics.zip  
+      Environment:
+        Variables:
+          MLOPS_DYNAMODB_TABLE: !Ref DynamoDBTableName
+          MLOPS_SNS_TOPIC_NAME: !Ref SNSTopicName
+      Layers:
+        - !Ref AWSPandasLambdaLayerARN  # AWS-provided layer's ARN
+
+  LambdaDeployStagedModel:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: mlops-deploy-staged-model-cf
+      Description: "Lambda function to deploy the staged model to sagemaker endpoint."
+      Runtime: python3.11  
+      Handler: mlops-deploy-staged-model.lambda_handler 
+      Role: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+      Timeout: 30
+      Code:
+        S3Bucket: mlops-cloud-formation-artifacts 
+        S3Key: lambda-function-codebase/mlops-deploy-staged-model.zip  
+      Environment:
+        Variables:
+          MLOPS_DYNAMODB_TABLE: !Ref DynamoDBTableName
+          MLOPS_SNS_TOPIC_NAME: !Ref SNSTopicName
+          MLOPS_S3_BUCKET_NAME: !Ref S3BucketName
+
+  LambdaGetLatestModelMetrics:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: mlops-get-latest-staged-model-metrics-cf
+      Description: "Lambda function to retrieve the latest staged model metrics from DynamoDB."
+      Runtime: python3.11  
+      Handler: mlops-get-latest-staged-model-metrics.lambda_handler 
+      Role: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+      Timeout: 30
+      Code:
+        S3Bucket: mlops-cloud-formation-artifacts 
+        S3Key: lambda-function-codebase/mlops-get-latest-staged-model-metrics.zip  
+      Environment:
+        Variables:
+          MLOPS_DYNAMODB_TABLE: !Ref DynamoDBTableName
+
+  LambdaGetPrediction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: mlops-get-prediction-cf
+      Description: "Lambda function to perform inference on a user's image stored in S3 bucket directory."
+      Runtime: python3.11  
+      Handler: mlops-get-prediction.lambda_handler 
+      Role: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+      Timeout: 30
+      Code:
+        S3Bucket: mlops-cloud-formation-artifacts 
+        S3Key: lambda-function-codebase/mlops-get-prediction.zip  
+      Environment:
+        Variables:
+          MLOPS_S3_BUCKET_NAME: !Ref S3BucketName
+      Layers:
+        - !Ref KLayersPillowLambdaLayerARN  # KLayers ARN
+        - !Ref KLayersNumpyLambdaLayerARN  # KLayers ARN
+
+  LambdaGetPredictionResult:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: mlops-get-prediction-results-cf
+      Description: "Lambda function to perform inference on a user's image using base64 format of image."
+      Runtime: python3.11  
+      Handler: mlops-get-prediction-results.lambda_handler 
+      Role: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+      Timeout: 30
+      Code:
+        S3Bucket: mlops-cloud-formation-artifacts 
+        S3Key: lambda-function-codebase/mlops-get-prediction-results.zip  
+
+
+  LambdaImagePreprocessingBeforePrediction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: mlops-image-preprocessing-before-prediction-cf
+      Description: "Lambda function to perform image pre-processing on the user's image uplaoded to S3."
+      Runtime: python3.11  
+      Handler: mlops-image-preprocessing-before-prediction.lambda_handler 
+      Role: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+      Timeout: 30
+      Code:
+        S3Bucket: mlops-cloud-formation-artifacts 
+        S3Key: lambda-function-codebase/mlops-image-preprocessing-before-prediction.zip  
+      Environment:
+        Variables:
+          MLOPS_S3_BUCKET_NAME: !Ref S3BucketName
+      Layers:
+        - !Ref KLayersPillowLambdaLayerARN  # KLayers ARN
+        - !Ref KLayersNumpyLambdaLayerARN  # KLayers ARN
+
+  LambdaInitiateModelTrainingJob:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: mlops-initiate-model-training-cf
+      Description: "Lambda function to initiate a sagemaker training job at the given timestamp."
+      Runtime: python3.11  
+      Handler: mlops-initiate-model-training.lambda_handler 
+      Role: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+      Timeout: 30
+      Code:
+        S3Bucket: mlops-cloud-formation-artifacts 
+        S3Key: lambda-function-codebase/mlops-initiate-model-training.zip  
+      Environment:
+        Variables:
+          MLOPS_S3_BUCKET_NAME: !Ref S3BucketName
+          MLOPS_ECR_CON_URL: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepositorySagemakerTraining}:latest"
+          MLOPS_DYNAMODB_TABLE: !Ref DynamoDBTableName
+
+  LambdaNotifyModelDeploymentStatus:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: mlops-notify-model-deployment-status-cf
+      Description: "Lambda function to send a email SNS notification to subscribers about model deployed succesfully."
+      Runtime: python3.11  
+      Handler: mlops-notify-model-deployment-status.lambda_handler 
+      Role: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+      Timeout: 30
+      Code:
+        S3Bucket: mlops-cloud-formation-artifacts 
+        S3Key: lambda-function-codebase/mlops-notify-model-deployment-status.zip  
+      Environment:
+        Variables:
+          MLOPS_S3_BUCKET_NAME: !Ref S3BucketName
+          MLOPS_DYNAMODB_TABLE: !Ref DynamoDBTableName
+          SNSTopicName: !Ref SNSTopicName
+
+  LambdaRejectStagedModel:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: mlops-reject-staged-model-cf
+      Description: "Lambda function to reject the latest staged model in S3, and DynamoDB."
+      Runtime: python3.11  
+      Handler: mlops-reject-staged-model.lambda_handler 
+      Role: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+      Timeout: 30
+      Code:
+        S3Bucket: mlops-cloud-formation-artifacts 
+        S3Key: lambda-function-codebase/mlops-reject-staged-model.zip  
+      Environment:
+        Variables:
+          MLOPS_S3_BUCKET_NAME: !Ref S3BucketName
+          MLOPS_DYNAMODB_TABLE: !Ref DynamoDBTableName
+          SNSTopicName: !Ref SNSTopicName
+
+  LambdaSubscribeToPipelineNotifications:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: mlops-subscribe-to-pipeline-notifications-cf
+      Description: "Lambda function to subscribe an email to the mlops SNS topic."
+      Runtime: python3.11  
+      Handler: mlops-subscribe-to-pipeline-notifications.lambda_handler 
+      Role: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+      Timeout: 30
+      Code:
+        S3Bucket: mlops-cloud-formation-artifacts 
+        S3Key: lambda-function-codebase/mlops-subscribe-to-pipeline-notifications.zip  
+      Environment:
+        Variables:
+          SNSTopicName: !Ref SNSTopicName
+
+  LambdaUploadImageToS3Bucket:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: mlops-upload-image-to-s3-for-inference-cf
+      Description: "Lambda function to uplaod user's image to S3 for inference."
+      Runtime: python3.11  
+      Handler: mlops-upload-image-to-s3-for-inference.lambda_handler 
+      Role: arn:aws:iam::<ACCOUNT_ID>:role/<ROLE_NAME>
+      Timeout: 30
+      Code:
+        S3Bucket: mlops-cloud-formation-artifacts 
+        S3Key: lambda-function-codebase/mlops-upload-image-to-s3-for-inference.zip  
+      Environment:
+        Variables:
+          MLOPS_S3_BUCKET_NAME: !Ref S3BucketName
+
+  ################################################################
+  ##### Create Event Trigger Rules ###############################
+  ################################################################
+  EventRuleSageMakerTrainingJobStateChange:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "Trigger Lambda on SageMaker Training Job Completion"
+      EventBusName: default
+      EventPattern:
+        source:
+          - aws.sagemaker
+        detail-type:
+          - SageMaker Training Job State Change
+        detail:
+          TrainingJobStatus:
+            - Completed
+      Name: trigger-lambda-staged-metric-comparison-1-cf
+      State: ENABLED
+      Targets:
+        - Id: "compareStagedModelLambda"
+          Arn: !GetAtt LambdaCompareModelStagedMetrics.Arn
+  
+  # Give permission for lambda invocation for the given rule
+  LambdaInvokePermissionSagemakerModelComparison:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt LambdaCompareModelStagedMetrics.Arn
+      Action: lambda:InvokeFunction
+      Principal: sagemaker.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !GetAtt EventRuleSageMakerTrainingJobStateChange.Arn
+
+  EventRuleSageMakerEndpointStateChange:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: notify-model-endpoint-deployment-status-1-cf
+      Description: "Notify Lambda on SageMaker Endpoint State Change"
+      EventBusName: default
+      EventPattern:
+        source:
+          - aws.sagemaker
+        detail-type:
+          - SageMaker Endpoint State Change
+      State: ENABLED
+      Targets:
+        - Id: "NotifyModelDeploymentLambda"
+          Arn: !GetAtt LambdaNotifyModelDeploymentStatus.Arn
+  
+  # Give permission for lambda invocation for the given rule
+  LambdaInvokePermissionSagemakerModelDeployment:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt LambdaNotifyModelDeploymentStatus.Arn
+      Action: lambda:InvokeFunction
+      Principal: sagemaker.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !GetAtt EventRuleSageMakerEndpointStateChange.Arn
+  
+  # Create a event which performs prediction when the image is uploaded to S3
+  EventRuleS3ObjectCreated:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: image-prediction-upload-repository-1-cf
+      Description: "Trigger Lambda on S3 Object Creation in 'user-uploaded-images' prefix"
+      EventBusName: default
+      EventPattern:
+        source:
+          - aws.s3
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          eventName:
+            - "s3:ObjectCreated:*"
+          requestParameters:
+            bucketName:
+              - !Ref S3BucketName
+            key:
+              - "user-uploaded-images/*"
+      State: ENABLED
+      Targets:
+        - Id: "ImagePreprocessBeforePredictionLambda"
+          Arn: !GetAtt LambdaImagePreprocessingBeforePrediction.Arn
+          
+  # Give permission for lambda invocation for the given rule
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt LambdaImagePreprocessingBeforePrediction.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:aws:s3:::${S3BucketName}'
+
+  ################################################################
+  ##### Create API Gateway integrated with Lambda ################
+  ################################################################
+  APIGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: mlops-pipeline-cf
+      Description: mlops pipeline API Gateway
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+  
+  # Specify permission to API Gateway to invoke lamdba function
+  APILambdaPermissionAcceptStagedModel:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref LambdaDeployStagedModel
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*"
+    DependsOn: LambdaDeployStagedModel
+
+  # Create API Resource
+  APIResourceAcceptStagedModel:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !GetAtt APIGateway.RootResourceId
+      PathPart: accept-staged-model
+  
+  # Create API Method : POST
+  APIAcceptStagedModel:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceAcceptStagedModel
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaDeployStagedModel.Arn}/invocations
+    DependsOn:
+      - LambdaDeployStagedModel
+      - APILambdaPermissionAcceptStagedModel
+  
+  # Create API Method : OPTIONS
+  OptionsMethodAcceptStagedModel:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceAcceptStagedModel
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE'"
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            ResponseTemplates:
+              "application/json": ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Origin": true
+          ResponseModels:
+            "application/json": "Empty"
+
+  # Specify permission to API Gateway to invoke lamdba function
+  APILambdaPermissionCompareModels:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref LambdaCompareModelStagedMetrics
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*"
+    DependsOn: LambdaCompareModelStagedMetrics
+
+  # Create API Resource
+  APIResourceCompareModels:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !GetAtt APIGateway.RootResourceId
+      PathPart: compare-models
+
+  # Create API Method : POST
+  APICompareModels:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceCompareModels
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaCompareModelStagedMetrics.Arn}/invocations
+    DependsOn:
+      - LambdaCompareModelStagedMetrics
+      - APILambdaPermissionCompareModels
+  
+  # Create API Method : OPTIONS
+  OptionsCompareModels:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceCompareModels
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE'"
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            ResponseTemplates:
+              "application/json": ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Origin": true
+          ResponseModels:
+            "application/json": "Empty"
+
+  # Create API Method : OPTIONS
+  APILambdaPermissionGetLatestStagedModels:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref LambdaGetLatestModelMetrics
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*"
+    DependsOn: LambdaGetLatestModelMetrics
+
+  # Create API Resource
+  APIResourceGetLatestStagedModels:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !GetAtt APIGateway.RootResourceId
+      PathPart: get-latest-staged-model
+
+  # Create API Method : POST
+  APIGetLatestStagedModels:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceGetLatestStagedModels
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaGetLatestModelMetrics.Arn}/invocations
+    DependsOn:
+      - LambdaGetLatestModelMetrics
+      - APILambdaPermissionGetLatestStagedModels
+
+  # Create API Method : OPTIONS
+  OptionsGetLatestStagedModels:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceGetLatestStagedModels
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE'"
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            ResponseTemplates:
+              "application/json": ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Origin": true
+          ResponseModels:
+            "application/json": "Empty"
+
+  # Specify permiscsion to API Gateway to invoke lamdba function
+  APILambdaPermissionPredict:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref LambdaGetPrediction
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*"
+    DependsOn: LambdaGetPrediction
+
+  # Create API Resource
+  APIResourcePredict:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !GetAtt APIGateway.RootResourceId
+      PathPart: predict 
+
+  # Create API Method : POST
+  APIPredict:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourcePredict
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaGetPrediction.Arn}/invocations
+    DependsOn:
+      - LambdaGetPrediction
+      - APILambdaPermissionPredict
+
+  # Create API Method : OPTIONS
+  OptionsPredict:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourcePredict
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE'"
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            ResponseTemplates:
+              "application/json": ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Origin": true
+          ResponseModels:
+            "application/json": "Empty"
+
+  # Specify permiscsion to API Gateway to invoke lamdba function
+  APILambdaPermissionRejectStagedModel:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref LambdaRejectStagedModel
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*"
+    DependsOn: LambdaRejectStagedModel
+
+  # Create API Resource
+  APIResourceRejectStagedModel:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !GetAtt APIGateway.RootResourceId
+      PathPart: reject-staged-model 
+
+  # Create API Method : POST
+  APIRejectStagedModel:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceRejectStagedModel
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaRejectStagedModel.Arn}/invocations
+    DependsOn:
+      - LambdaRejectStagedModel
+      - APILambdaPermissionRejectStagedModel
+
+  # Create API Method : OPTIONS
+  OptionsRejectStagedModel:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceRejectStagedModel
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE'"
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            ResponseTemplates:
+              "application/json": ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Origin": true
+          ResponseModels:
+            "application/json": "Empty"
+
+  # Specify permiscsion to API Gateway to invoke lamdba function
+  APILambdaPermissionStartModelTraining:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref LambdaInitiateModelTrainingJob
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*"
+    DependsOn: LambdaInitiateModelTrainingJob
+
+  # Create API Resource
+  APIResourceStartModelTraining:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !GetAtt APIGateway.RootResourceId
+      PathPart: start-model-training 
+
+  # Create API Method : POST
+  APIStartModelTraining:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceStartModelTraining
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaInitiateModelTrainingJob.Arn}/invocations
+    DependsOn:
+      - LambdaInitiateModelTrainingJob
+      - APILambdaPermissionStartModelTraining
+
+  # Create API Method : OPTIONS
+  OptionsStartModelTraining:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceStartModelTraining
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE'"
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            ResponseTemplates:
+              "application/json": ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Origin": true
+          ResponseModels:
+            "application/json": "Empty"
+
+  # Specify permiscsion to API Gateway to invoke lamdba function
+  APILambdaPermissionSubscribeUser:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref LambdaSubscribeToPipelineNotifications
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*"
+    DependsOn: LambdaSubscribeToPipelineNotifications
+
+  # Create API Resource
+  APIResourceSubscribeUser:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !GetAtt APIGateway.RootResourceId
+      PathPart: subscribe-user 
+
+  # Create API Method : POST
+  APISubscribeUser:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceSubscribeUser
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaSubscribeToPipelineNotifications.Arn}/invocations
+    DependsOn:
+      - LambdaSubscribeToPipelineNotifications
+      - APILambdaPermissionSubscribeUser
+
+  # Create API Method : OPTIONS
+  OptionsSubscribeUser:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceSubscribeUser
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE'"
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            ResponseTemplates:
+              "application/json": ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Origin": true
+          ResponseModels:
+            "application/json": "Empty"
+
+  # Specify permiscsion to API Gateway to invoke lamdba function
+  APILambdaPermissionUploadImageToS3:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref LambdaUploadImageToS3Bucket
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/*"
+    DependsOn: LambdaUploadImageToS3Bucket
+
+  # Create API Resource
+  APIResourceUploadImageToS3:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !GetAtt APIGateway.RootResourceId
+      PathPart: upload-image-to-s3
+
+  # Create API Method : POST
+  APIUploadImageToS3:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceUploadImageToS3
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaUploadImageToS3Bucket.Arn}/invocations
+    DependsOn:
+      - LambdaUploadImageToS3Bucket
+      - APILambdaPermissionUploadImageToS3
+
+  # Create API Method : OPTIONS
+  OptionsUploadImageToS3:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIResourceUploadImageToS3
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE'"
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            ResponseTemplates:
+              "application/json": ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Origin": true
+          ResponseModels:
+            "application/json": "Empty"
+  
+  # Create the deployemnt of the Rest API
+  APIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - APIAcceptStagedModel
+      - APICompareModels
+      - APIGetLatestStagedModels
+      - APIPredict
+      - APIResourceRejectStagedModel
+      - APIRejectStagedModel
+      - APIStartModelTraining
+      - APISubscribeUser
+      - APIUploadImageToS3
+    Properties:
+      RestApiId: !Ref APIGateway
+      Description: mlops pipeline API Gateway deployment
+  
+  # Set the Deployment Stage of the Rest API
+  APIStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref APIGateway
+      DeploymentId: !Ref APIDeployment
+      StageName: mlops-prod 
+
+  ################################################################
+  ##### Create EC2 Instance ######################################
+  ################################################################
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0230bd60aa48260c6  # Amazon Linux 2023 AMI
+      InstanceType: t2.micro 
+      IamInstanceProfile: LabInstanceProfile
+      KeyName: vockey
+      SecurityGroups:
+        - !Ref MLOPSSG
+      # BlockDeviceMappings:    # For mounting additional EBS mount volume 
+      # - DeviceName: /dev/sda1
+      #   Ebs:
+      #     VolumeSize: 20 
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: '25'
+            DeleteOnTermination: 'true'
+            Encrypted: 'true'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+
+          # sudo yum update -y
+          sudo yum install docker -y
+          sudo service docker start
+          sudo yum install tmux -y
+          sudo yum install python-pip -y
+          # sudo yum install dos2unix
+
+          # Copy sagemaker training job docker related files
+          sudo aws s3 sync s3://mlops-cloud-formation-artifacts/sagemaker-model-training/ /sagemaker-model-training
+          
+          # Copy streamlit frontend application files
+          sudo aws s3 sync s3://mlops-cloud-formation-artifacts/streamlit-app/ /streamlit-app
+
+          # Copy sample DynamoDB data files
+          sudo aws s3 sync s3://mlops-cloud-formation-artifacts/dynamodb-load-data/ /dynamodb-load-data
+
+          # Move training data from cloud-front s3 bucket into the project's s3 bucket
+          sudo aws s3 cp s3://mlops-cloud-formation-artifacts/waste-classification-data/ s3://mlops-model-storage-cf/waste-classification-data/ --recursive
+      Tags:
+        - Key: Name
+          Value: StreamlitEC2Instance
+
+  ################################################################
+  ##### Create the Security Group for the EC2 Instance ###########
+  ################################################################
+  MLOPSSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH, Port 8501
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          CidrIp: 0.0.0.0/0
+  ################################################################################################################################
