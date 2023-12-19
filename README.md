@@ -118,6 +118,63 @@ A combination of FaaS (Lambda) and IaaS (EC2) is used to balance costs and flexi
 | Minimum **Monthly** Cost Estimate |                               | **$40.07** |
 
 * *While this estimation provides a calculated overview, some values within it might represent higher usage than anticipated, possibly affecting the accuracy of the total cost.*
+These costs are estimated using the AWS Pricing calculator [“AWS Pricing Calculator,” Calculator.aws. [Online] Available: https://calculator.aws/#/]
+
+## Project Execution Screenshot
+
+![Model Evaluation Dashboard](/image-assets/model-evaluation-dashboard.png)
+
+_Figure : Dashboard for visualising the model metrics stored in DynamoDB_
+
+![Subscribe SNS Topic](/image-assets/subscribe-sns-topic.png)
+
+_Figure : Subscribe email ID to SNS Topic_
+
+![Subscription Email Notification](/image-assets/subscription-email-notification.png)
+
+_Figure : Subscription email notification_
+
+![Error when no model endpoitn is deployed to Amazon SageMaker](/image-assets/error-when-no-model-endpoint-deployed.png)
+
+_Figure : Error prompt when performing prediction when no model endpoint deployed for inference_
+
+![Initiate Model Training](/image-assets/initiate-model-training.png)
+
+_Figure : Starting training job of the model on the training dataset_
+
+![In-Progress Model Training status](/image-assets/model-training-in-progress.png)
+
+_Figure : Status indicating model training in progress_
+
+![Email Notification after training is successfull](/image-assets/email-notification-after-training-suceeded.png)
+
+_Figure : Email notification showing model comparison between latest trained model and the current deployed model_
+
+![Accept/Reject model after model training](/image-assets/options-after-model-training.png)
+
+_Figure : Accept and Reject model with latest staged model metric on frontend_
+
+![Email Notification after model deployment is successfull](/image-assets/email-notification-successful-model-deployment.png)
+
+_Figure : email received about model endpoint status "inService" after successful deployment_
+
+
+![Inference result - organic class](/image-assets/inference-result-organic.png)
+
+_Figure : Inference result for an Organic image_
+
+
+![Inference result - recyclable class](/image-assets/inference-result-recyclable.png)
+
+_Figure : Image inference result for a recyclable image_
+
+
+![Visualisation after model accepted and deployed to Amazon Sagemaker endpoint](/image-assets/visualisation-after-model-accepted-and-deployed.png)
+
+_Figure : Visualisation dashboard after model is accepted_
+
+
+
 
 <hr>
 
