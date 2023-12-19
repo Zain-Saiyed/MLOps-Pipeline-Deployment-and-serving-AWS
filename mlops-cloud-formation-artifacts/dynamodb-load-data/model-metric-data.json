@@ -1,0 +1,106 @@
+[
+  {
+    "model_id": "model-1",
+    "timestamp": "16112023150000",
+    "model_type": "history",
+    "metrics": {
+      "auc_roc": "0.75",
+      "f1_score": "0.76",
+      "false_positive": "10",
+      "true_positive": "180",
+      "false_negative": "20",
+      "true_negative": "250",
+      "accuracy": "0.76",
+      "precision": "0.79",
+      "recall": "0.82",
+      "support": "15.0"
+    }
+  },
+  {
+    "model_id": "model-3",
+    "timestamp": "16112023170000",
+    "model_type": "history",
+    "metrics": {
+      "auc_roc": "0.83",
+      "f1_score": "0.81",
+      "false_positive": "15",
+      "true_positive": "175",
+      "false_negative": "25",
+      "true_negative": "270",
+      "accuracy": "0.81",
+      "precision": "0.82",
+      "recall": "0.88",
+      "support": "15.0"
+    }
+  },
+  {
+    "model_id": "model-4",
+    "timestamp": "16112023180000",
+    "model_type": "history",
+    "metrics": {
+      "auc_roc": "0.79",
+      "f1_score": "0.77",
+      "false_positive": "12",
+      "true_positive": "160",
+      "false_negative": "22",
+      "true_negative": "255",
+      "accuracy": "0.77",
+      "precision": "0.78",
+      "recall": "0.84",
+      "support": "15.0"
+    }
+  },
+  {
+    "model_id": "model-5",
+    "timestamp": "16112023190000",
+    "model_type": "history",
+    "metrics": {
+      "auc_roc": "0.81",
+      "f1_score": "0.79",
+      "false_positive": "14",
+      "true_positive": "168",
+      "false_negative": "24",
+      "true_negative": "260",
+      "accuracy": "0.79",
+      "precision": "0.80",
+      "recall": "0.86",
+      "support": "15.0"
+    }
+  },
+  {
+    "model_id"  : "model-2",
+    "timestamp" : "16112023160000",
+    "model_type": "current-deployed",
+    "metrics": {
+      "auc_roc": "0.92",
+      "f1_score": "0.78",
+      "false_positive": "20",
+      "true_positive": "150",
+      "false_negative": "10",
+      "true_negative": "300",
+      "accuracy": "0.85",
+      "precision": "0.88",
+      "recall": "0.94",
+      "support": "15.0"
+    }
+  },
+  {
+    "model_id": "model-staged",
+    "timestamp": "",
+    "model_type": "latest-staged",
+    "training_complete": false,
+    "approved": true,
+    "metrics": {
+      "auc_roc": null,
+      "f1_score": null,
+      "false_positive": null,
+      "true_positive": null,
+      "false_negative": null,
+      "true_negative": null,
+      "accuracy": null,
+      "precision": null,
+      "recall": null,
+      "support": null
+    }
+  }
+]

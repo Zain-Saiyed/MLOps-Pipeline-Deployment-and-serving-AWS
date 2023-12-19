@@ -1,0 +1,1 @@
+API_URL = "https://<APIGateway_ID>.execute-api.<REGION_NAME>.amazonaws.com/mlops-prod"
